@@ -62,6 +62,20 @@ final class ReflectionViewModel {
     /// モデルコンテキスト
     private var modelContext: ModelContext?
 
+    // MARK: - Cache & Prefetch
+
+    /// 展開結果のキャッシュ
+    private var expansionCache: [UUID: [MindMapNode]] = [:]
+
+    /// 先読みタスク
+    private var prefetchTasks: [UUID: Task<[MindMapNode], Error>] = [:]
+
+    /// ストリーミング中の子ノード（段階的に表示）
+    var streamingChildren: [MindMapNode] = []
+
+    /// ストリーミングモードを使用するか
+    var useStreamingMode = true
+
     // MARK: - Computed Properties
 
     /// 現在表示中のノード
@@ -127,6 +141,44 @@ final class ReflectionViewModel {
         isLoading = false
     }
 
+    // MARK: - Prefetch Methods
+
+    /// 子ノードを先読み展開
+    /// - Parameter node: 先読み対象のノード
+    func prefetchChildren(for node: MindMapNode) {
+        // 既にキャッシュ済み、先読み中、または読み込み済みならスキップ
+        guard node.type == .cause,
+              expansionCache[node.id] == nil,
+              prefetchTasks[node.id] == nil,
+              !node.isLoaded else {
+            return
+        }
+
+        let currentPath = pathLabels + [node.label]
+        let existingRules = fetchExistingRules()
+        let context = inputText
+
+        prefetchTasks[node.id] = Task { [analyzer] in
+            try await analyzer.expandNode(
+                node: node,
+                context: context,
+                path: currentPath,
+                existingRules: existingRules
+            )
+        }
+
+        print("[ReflectionViewModel] Started prefetch for: \(node.label)")
+    }
+
+    /// 現在の子ノードすべてを先読み
+    func prefetchAllChildren() {
+        guard let current = currentNode, let children = current.children else { return }
+
+        for child in children where child.type == .cause {
+            prefetchChildren(for: child)
+        }
+    }
+
     // MARK: - Navigation Methods
 
     /// 深堀りノードをタップ（子ノードを展開して移動）
@@ -138,6 +190,37 @@ final class ReflectionViewModel {
         if node.isLoaded, let _ = node.children {
             navigationPath.append(node)
             return
+        }
+
+        // キャッシュチェック
+        if let cached = expansionCache[node.id] {
+            var updatedNode = node
+            updatedNode.setChildren(cached)
+            updateNodeInTree(updatedNode)
+            navigationPath.append(updatedNode)
+            print("[ReflectionViewModel] Used cached expansion for: \(node.label)")
+            return
+        }
+
+        // 先読み結果をチェック
+        if let prefetchTask = prefetchTasks[node.id] {
+            isExpanding = true
+            do {
+                let children = try await prefetchTask.value
+                prefetchTasks.removeValue(forKey: node.id)
+                expansionCache[node.id] = children
+
+                var updatedNode = node
+                updatedNode.setChildren(children)
+                updateNodeInTree(updatedNode)
+                navigationPath.append(updatedNode)
+                print("[ReflectionViewModel] Used prefetched expansion for: \(node.label)")
+                isExpanding = false
+                return
+            } catch {
+                prefetchTasks.removeValue(forKey: node.id)
+                // 先読み失敗時は通常の展開にフォールバック
+            }
         }
 
         // 子ノードを生成
@@ -153,6 +236,9 @@ final class ReflectionViewModel {
                 path: currentPath,
                 existingRules: existingRules
             )
+
+            // キャッシュに保存
+            expansionCache[node.id] = children
 
             // 親ノードがルール更新モードの場合、子ノードにも伝播
             if let ruleId = node.existingRuleId {
@@ -408,6 +494,13 @@ final class ReflectionViewModel {
         currentEntry = nil
         errorMessage = nil
         successMessage = nil
+
+        // キャッシュをクリア
+        expansionCache.removeAll()
+
+        // 先読みタスクをキャンセル
+        prefetchTasks.values.forEach { $0.cancel() }
+        prefetchTasks.removeAll()
     }
 }
 

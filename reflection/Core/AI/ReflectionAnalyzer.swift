@@ -55,9 +55,43 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
         SystemLanguageModel.default.isAvailable
     }
 
+    /// キャッシュ済みセッション（Prewarm用）
+    private var prewarmedSession: LanguageModelSession?
+
     // MARK: - Initializer
 
-    private init() {}
+    private init() {
+        // 初期化時にセッションをprewarm
+        prepareNextSession()
+    }
+
+    // MARK: - Session Management
+
+    /// 次の分析用にセッションを準備（Prewarm）
+    func prepareNextSession() {
+        guard isAvailable else { return }
+
+        let session = LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
+        session.prewarm()
+        prewarmedSession = session
+    }
+
+    /// Prewarm済みセッションを取得し、次のセッションを準備
+    private func getPrewarmedSession() -> LanguageModelSession {
+        let session: LanguageModelSession
+        if let cached = prewarmedSession {
+            session = cached
+        } else {
+            session = LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
+        }
+
+        // 次の分析用にバックグラウンドで準備
+        Task { @MainActor in
+            prepareNextSession()
+        }
+
+        return session
+    }
 
     // MARK: - Public Methods
 
@@ -78,19 +112,19 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
         }
 
         do {
-            // Step 1: 自由文で思考
-            let thinkingSession = LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
+            // Step 1: 自由文で思考（Prewarm済みセッションを使用）
+            let session = getPrewarmedSession()
             let thinkingPrompt = AnalysisPrompts.initialAnalysisThinking(content: content)
 
-            let thinkingResponse = try await thinkingSession.respond(to: thinkingPrompt)
+            let thinkingResponse = try await session.respond(to: thinkingPrompt)
             let thinkingResult = thinkingResponse.content
 
             print("[ReflectionAnalyzer] Step1 thinking: \(thinkingResult.prefix(100))...")
 
-            // Step 2: 構造化
+            // Step 2: 構造化（同じセッションを再利用）
             let structuringPrompt = AnalysisPrompts.initialAnalysisStructuring(thinkingResult: thinkingResult)
 
-            let structuredResponse = try await thinkingSession.respond(
+            let structuredResponse = try await session.respond(
                 to: structuringPrompt,
                 generating: GeneratedAnalysisResult.self
             )
@@ -161,8 +195,8 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
         let allowedStages = determineAllowedStages(for: depth)
 
         do {
-            // Step 1: 自由文で思考
-            let thinkingSession = LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
+            // Step 1: 自由文で思考（Prewarm済みセッションを使用）
+            let session = getPrewarmedSession()
             let thinkingPrompt = AnalysisPrompts.nodeExpansionThinking(
                 originalContent: context,
                 currentCause: node.label,
@@ -171,18 +205,18 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
                 allowedStages: allowedStages
             )
 
-            let thinkingResponse = try await thinkingSession.respond(to: thinkingPrompt)
+            let thinkingResponse = try await session.respond(to: thinkingPrompt)
             let thinkingResult = thinkingResponse.content
 
             print("[ReflectionAnalyzer] Step1 thinking (depth=\(depth)): \(thinkingResult.prefix(100))...")
 
-            // Step 2: 構造化
+            // Step 2: 構造化（同じセッションを再利用）
             let structuringPrompt = AnalysisPrompts.nodeExpansionStructuring(
                 thinkingResult: thinkingResult,
                 allowedStages: allowedStages
             )
 
-            let structuredResponse = try await thinkingSession.respond(
+            let structuredResponse = try await session.respond(
                 to: structuringPrompt,
                 generating: GeneratedAnalysisResult.self
             )
@@ -224,6 +258,195 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
         } catch {
             print("[ReflectionAnalyzer] Error: \(error)")
             throw ReflectionAnalyzerError.analysisFailed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Streaming Methods
+
+    /// 初期分析をストリーミングで実行
+    /// Step2の構造化結果を逐次返す
+    /// - Parameters:
+    ///   - content: 反省内容
+    ///   - existingRules: 既存ルールのリスト
+    /// - Returns: 子ノードのストリーム
+    func analyzeInitialStreaming(
+        content: String,
+        existingRules: [ExistingRuleInfo]
+    ) -> AsyncThrowingStream<[MindMapNode], Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                do {
+                    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continuation.finish(throwing: ReflectionAnalyzerError.emptyInput)
+                        return
+                    }
+
+                    guard SystemLanguageModel.default.isAvailable else {
+                        continuation.finish(throwing: ReflectionAnalyzerError.foundationModelsUnavailable)
+                        return
+                    }
+
+                    // Step 1: 自由文で思考
+                    let session = self.getPrewarmedSession()
+                    let thinkingPrompt = AnalysisPrompts.initialAnalysisThinking(content: content)
+                    let thinkingResponse = try await session.respond(to: thinkingPrompt)
+                    let thinkingResult = thinkingResponse.content
+
+                    // Step 2: 構造化（ストリーミング）
+                    let structuringPrompt = AnalysisPrompts.initialAnalysisStructuring(thinkingResult: thinkingResult)
+                    let stream = session.streamResponse(
+                        to: structuringPrompt,
+                        generating: GeneratedAnalysisResult.self
+                    )
+
+                    var lastYieldedCount = 0
+
+                    for try await snapshot in stream {
+                        // 部分的な結果からノードを抽出
+                        if let items = snapshot.content.items {
+                            let nodes = items.compactMap { item -> MindMapNode? in
+                                guard let label = item.label, let stage = item.stage else { return nil }
+                                let fullItem = GeneratedItem(label: label, stage: stage, rule: item.rule)
+                                return self.convertToMindMapNode(fullItem, depth: 1)
+                            }
+
+                            // 新しいノードがあれば yield
+                            if nodes.count > lastYieldedCount {
+                                continuation.yield(nodes)
+                                lastYieldedCount = nodes.count
+                            }
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// ノード展開をストリーミングで実行
+    /// - Parameters:
+    ///   - node: 展開するノード
+    ///   - context: 元の反省内容
+    ///   - path: これまでの経緯
+    ///   - existingRules: 既存ルールのリスト
+    /// - Returns: 子ノードのストリーム
+    func expandNodeStreaming(
+        node: MindMapNode,
+        context: String,
+        path: [String],
+        existingRules: [ExistingRuleInfo]
+    ) -> AsyncThrowingStream<[MindMapNode], Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                do {
+                    guard node.type == .cause else {
+                        continuation.finish()
+                        return
+                    }
+
+                    guard SystemLanguageModel.default.isAvailable else {
+                        continuation.finish(throwing: ReflectionAnalyzerError.foundationModelsUnavailable)
+                        return
+                    }
+
+                    let depth = path.count + 1
+                    let allowedStages = self.determineAllowedStages(for: depth)
+
+                    // Step 1: 自由文で思考
+                    let session = self.getPrewarmedSession()
+                    let thinkingPrompt = AnalysisPrompts.nodeExpansionThinking(
+                        originalContent: context,
+                        currentCause: node.label,
+                        path: path,
+                        depth: depth,
+                        allowedStages: allowedStages
+                    )
+                    let thinkingResponse = try await session.respond(to: thinkingPrompt)
+                    let thinkingResult = thinkingResponse.content
+
+                    // Step 2: 構造化（ストリーミング）
+                    let structuringPrompt = AnalysisPrompts.nodeExpansionStructuring(
+                        thinkingResult: thinkingResult,
+                        allowedStages: allowedStages
+                    )
+                    let stream = session.streamResponse(
+                        to: structuringPrompt,
+                        generating: GeneratedAnalysisResult.self
+                    )
+
+                    var lastYieldedCount = 0
+
+                    for try await snapshot in stream {
+                        if let items = snapshot.content.items {
+                            let nodes = items.compactMap { item -> MindMapNode? in
+                                guard let label = item.label, let stage = item.stage else { return nil }
+                                let fullItem = GeneratedItem(label: label, stage: stage, rule: item.rule)
+                                return self.convertToMindMapNode(fullItem, depth: depth)
+                            }
+
+                            if nodes.count > lastYieldedCount {
+                                continuation.yield(nodes)
+                                lastYieldedCount = nodes.count
+                            }
+                        }
+                    }
+
+                    // ルール競合チェック（深さ6以降）
+                    if depth >= 6 && !existingRules.isEmpty && !node.isRuleUpdateMode {
+                        let conflictNodes = try await self.checkRuleConflicts(
+                            cause: node.label,
+                            existingRules: existingRules
+                        )
+                        if !conflictNodes.isEmpty {
+                            // 既存ノードに競合ノードを追加して yield
+                            continuation.yield(conflictNodes)
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Parallel Expansion
+
+    /// 複数ノードを並列で展開
+    /// - Parameters:
+    ///   - nodes: 展開するノードのリスト
+    ///   - context: 元の反省内容
+    ///   - basePath: 基本パス
+    ///   - existingRules: 既存ルールのリスト
+    /// - Returns: ノードIDと子ノードのマッピング
+    func expandNodesInParallel(
+        nodes: [MindMapNode],
+        context: String,
+        basePath: [String],
+        existingRules: [ExistingRuleInfo]
+    ) async throws -> [UUID: [MindMapNode]] {
+        try await withThrowingTaskGroup(of: (UUID, [MindMapNode]).self) { group in
+            for node in nodes where node.type == .cause {
+                group.addTask { @MainActor in
+                    let children = try await self.expandNode(
+                        node: node,
+                        context: context,
+                        path: basePath + [node.label],
+                        existingRules: existingRules
+                    )
+                    return (node.id, children)
+                }
+            }
+
+            var results: [UUID: [MindMapNode]] = [:]
+            for try await (id, children) in group {
+                results[id] = children
+            }
+            return results
         }
     }
 

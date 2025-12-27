@@ -199,6 +199,14 @@ struct ReflectionView: View {
                     }
                 )
                 .frame(maxHeight: .infinity)
+                .onAppear {
+                    // 子ノードを先読み展開
+                    viewModel.prefetchAllChildren()
+                }
+                .onChange(of: viewModel.currentNode?.id) { _, _ in
+                    // ノード切り替え時も先読み
+                    viewModel.prefetchAllChildren()
+                }
             }
         }
     }
