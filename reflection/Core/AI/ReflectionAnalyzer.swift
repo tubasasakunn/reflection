@@ -61,8 +61,7 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
     // MARK: - Initializer
 
     private init() {
-        // 初期化時にセッションをprewarm
-        prepareNextSession()
+        // 初期化時のprewarmは行わない（Foundation Modelsが利用可能になってから呼び出す）
     }
 
     // MARK: - Session Management
@@ -77,20 +76,12 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
     }
 
     /// Prewarm済みセッションを取得し、次のセッションを準備
-    private func getPrewarmedSession() -> LanguageModelSession {
-        let session: LanguageModelSession
+    private func getOrCreateSession() -> LanguageModelSession {
         if let cached = prewarmedSession {
-            session = cached
-        } else {
-            session = LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
+            prewarmedSession = nil  // 使用済みとしてクリア
+            return cached
         }
-
-        // 次の分析用にバックグラウンドで準備
-        Task { @MainActor in
-            prepareNextSession()
-        }
-
-        return session
+        return LanguageModelSession(instructions: AnalysisPrompts.systemInstruction)
     }
 
     // MARK: - Public Methods
@@ -113,7 +104,7 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
 
         do {
             // Step 1: 自由文で思考（Prewarm済みセッションを使用）
-            let session = getPrewarmedSession()
+            let session = getOrCreateSession()
             let thinkingPrompt = AnalysisPrompts.initialAnalysisThinking(content: content)
 
             let thinkingResponse = try await session.respond(to: thinkingPrompt)
@@ -196,7 +187,7 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
 
         do {
             // Step 1: 自由文で思考（Prewarm済みセッションを使用）
-            let session = getPrewarmedSession()
+            let session = getOrCreateSession()
             let thinkingPrompt = AnalysisPrompts.nodeExpansionThinking(
                 originalContent: context,
                 currentCause: node.label,
@@ -287,7 +278,7 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
                     }
 
                     // Step 1: 自由文で思考
-                    let session = self.getPrewarmedSession()
+                    let session = self.getOrCreateSession()
                     let thinkingPrompt = AnalysisPrompts.initialAnalysisThinking(content: content)
                     let thinkingResponse = try await session.respond(to: thinkingPrompt)
                     let thinkingResult = thinkingResponse.content
@@ -356,7 +347,7 @@ final class ReflectionAnalyzer: ReflectionAnalyzerProtocol {
                     let allowedStages = self.determineAllowedStages(for: depth)
 
                     // Step 1: 自由文で思考
-                    let session = self.getPrewarmedSession()
+                    let session = self.getOrCreateSession()
                     let thinkingPrompt = AnalysisPrompts.nodeExpansionThinking(
                         originalContent: context,
                         currentCause: node.label,
