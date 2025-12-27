@@ -24,7 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		8C4B89D62EFED32C0027902A /* reflection.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = reflection.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8C4B89D62EFED32C0027902A /* basaappreflection.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = basaappreflection.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8C4B89E52EFED32D0027902A /* reflectionTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = reflectionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8C4B89EF2EFED32D0027902A /* reflectionUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = reflectionUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -85,7 +85,7 @@
 		8C4B89D72EFED32C0027902A /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				8C4B89D62EFED32C0027902A /* reflection.app */,
+				8C4B89D62EFED32C0027902A /* basaappreflection.app */,
 				8C4B89E52EFED32D0027902A /* reflectionTests.xctest */,
 				8C4B89EF2EFED32D0027902A /* reflectionUITests.xctest */,
 			);
@@ -114,7 +114,7 @@
 			packageProductDependencies = (
 			);
 			productName = reflection;
-			productReference = 8C4B89D62EFED32C0027902A /* reflection.app */;
+			productReference = 8C4B89D62EFED32C0027902A /* basaappreflection.app */;
 			productType = "com.apple.product-type.application";
 		};
 		8C4B89E42EFED32D0027902A /* reflectionTests */ = {
@@ -411,7 +411,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tubasasakun.reflection;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = basaappreflection;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -443,7 +443,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tubasasakun.reflection;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = basaappreflection;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
